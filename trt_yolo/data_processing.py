@@ -49,7 +49,7 @@ class PostprocessYOLO(object):
             self.anchor_wh .append( self.anchor_vec[i].view(1, self.na, 1, 1, 2))
         self.grid = list()
 
-    def process(self, outputs, resolution_raw):
+    def process(self, outputs):
 
         outputs_reshaped = list()
         self.grid = list()
@@ -58,39 +58,27 @@ class PostprocessYOLO(object):
             bs, _, ny, nx = output.shape
             self.create_grids((nx, ny))
             # print('shape bf:',output.shape)
-            outputs_reshaped.append(torch.from_numpy(self._reshape_output(output)))
+            tmp = torch.from_numpy(output)
+            tmp = tmp.view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()  # prediction
+
+            outputs_reshaped.append(tmp)
             # print('shape af:',self._reshape_output(output).shape)
 
         # print('len of outputs_reshaped: ', len(outputs_reshaped)) # 3 for yolov3
         batch_size = outputs_reshaped[0].shape[0]
 
-        i = 0
         output_list = list()
-        for output in (outputs_reshaped):
+        for i, output in enumerate(outputs_reshaped):
 
             output[..., :2]  = torch.sigmoid(output[..., :2]) + self.grid[i]  # xy
             output[..., 2:4] = torch.exp(output[..., 2:4]) * self.anchor_wh[i]  # wh yolo method
             output[..., :4] *= self.stride[i]
-            i = i + 1
 
             torch.sigmoid_(output[..., 4:])
-            output_list.append( output.view(batch_size, -1, self.no))  # view [1, 3, 13, 13, 85] as [1, 507, 85]
+            output_list.append(output.view(batch_size, -1, self.no))  # view [1, 3, 13, 13, 85] as [1, 507, 85]
 
         return output_list
 
-
-    def _reshape_output(self, output):
-        output = np.transpose(output, [0, 2, 3, 1])
-        batch_size, height, width, _ = output.shape
-        dim1, dim2 = height, width
-        dim3 = 3
-
-        dim4 = self.no
-        print(np.reshape(output, (batch_size, dim3,dim1, dim2,dim4)).shape)
-        return np.reshape(output, (batch_size, dim3,dim1, dim2,dim4)) # (bs,3,13,13,ncls+5)
-
-        # print(np.reshape(output, (batch_size, dim1, dim2, dim3, dim4)).shape)
-        # return np.reshape(output, (batch_size, dim1, dim2, dim3, dim4)) # (bs,13,13,3,ncls+5)
 
     def create_grids(self, ng=(13, 13)):
         self.nx, self.ny = ng  # x and y grid size

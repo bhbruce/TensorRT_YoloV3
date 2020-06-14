@@ -120,10 +120,10 @@ class LoadImagesAndLabels():  # for training/testing
                 np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
 
             # Sort by aspect ratio
-            s = np.array(s, dtype=np.float64)# size pair(W,H) 
+            s = np.array(s, dtype=np.float64)# size pair(W,H)
             ar = s[:, 1] / s[:, 0]  # aspect ratio
-            
-            # sort img and label with sort index i 
+
+            # sort img and label with sort index i
             i = ar.argsort()
             self.img_files = [self.img_files[i] for i in i]
             self.label_files = [self.label_files[i] for i in i]
@@ -145,8 +145,8 @@ class LoadImagesAndLabels():  # for training/testing
         # Cache labels
         self.imgs = [None] * n
         self.labels = [np.zeros((0, 5), dtype=np.float32)] * n
-        
-        
+
+
         pbar = tqdm(self.label_files, desc='Caching labels')
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
         for i, file in enumerate(pbar):
@@ -226,25 +226,24 @@ class LoadImagesAndLabels():  # for training/testing
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
-        
+
         return img, labels_out, self.img_files[index], shapes
 
 def data_loader(dataset, batch_size, img_size):
-
     for batch in range(0, dataset.__len__(), batch_size):
-
         end = min(batch+batch_size,dataset.__len__())
         img_list = list()
         label_list = list()
         b_file_name = list()
         b_shapes = list()
         print('length of batch : ', end-batch)
-        for i in range(batch,end):
+        for idx, i in enumerate(range(batch, end)):
             img , label, file_name, shapes= dataset.__getitem__(i)
-            
             img_list.append(img)
+            for l in label:
+                l[0] = idx
             label_list.append(label)
             b_file_name.append(file_name)
             b_shapes.append(shapes)
-        
+
         yield (np.stack(img_list,0), np.concatenate(label_list,0),b_file_name,b_shapes)

@@ -47,25 +47,26 @@
 # comments to the code, the above Disclaimer and U.S. Government End
 # Users Notice.
 #
-
 from __future__ import print_function
+import os
 import tqdm
+import glob
+import torch
 import numpy as np
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
 from PIL import ImageDraw
 
-from data_processing import  PostprocessYOLO
+from data_processing import PostprocessYOLO
 
-import sys, os
-sys.path.insert(1, os.path.join(sys.path[0], ".."))
 import common
+import utils.utils as utils
 
 from utils.utils import parse_data_cfg, load_classes, non_max_suppression
 from utils.data_loader import LoadImagesAndLabels, data_loader
 TRT_LOGGER = trt.Logger()
-import torch
+
 
 def draw_bboxes(image_raw, bboxes, confidences, categories, all_categories, bbox_color='blue'):
     """Draw the bounding boxes on the original input image and return it.
@@ -95,13 +96,14 @@ def draw_bboxes(image_raw, bboxes, confidences, categories, all_categories, bbox
 
     return image_raw
 
+
 def get_engine(onnx_file_path, engine_file_path=""):
     """Attempts to load a serialized engine if available, otherwise builds a new TensorRT engine and saves it."""
     def build_engine():
         """Takes an ONNX file and creates a TensorRT engine to run inference with"""
         with trt.Builder(TRT_LOGGER) as builder, builder.create_network(common.EXPLICIT_BATCH) as network, trt.OnnxParser(network, TRT_LOGGER) as parser:
-            builder.max_workspace_size = 1 << 28 # 256MiB
-            builder.max_batch_size = 16
+            builder.max_workspace_size = 1 << 28  # 256MiB
+            builder.max_batch_size = 1
             # Parse model file
             if not os.path.exists(onnx_file_path):
                 print('ONNX file {} not found, please run yolov3_to_onnx.py first to generate it.'.format(onnx_file_path))
@@ -110,12 +112,13 @@ def get_engine(onnx_file_path, engine_file_path=""):
             with open(onnx_file_path, 'rb') as model:
                 print('Beginning ONNX file parsing')
                 if not parser.parse(model.read()):
-                    print ('ERROR: Failed to parse the ONNX file.')
+                    print('ERROR: Failed to parse the ONNX file.')
                     for error in range(parser.num_errors):
-                        print (parser.get_error(error))
+                        print(parser.get_error(error))
                     return None
             # The actual yolov3.onnx is generated with batch size 64. Reshape input to batch size 1
-            network.get_input(0).shape = [1, 3, 416, 416]# 608, 608]
+            network.get_input(0).shape = [16, 3, 448, 448]
+            # network.get_input(0).shape = [16, 3, 384, 384]
             print('Completed parsing of ONNX file')
             print('Building an engine from file {}; this may take a while...'.format(onnx_file_path))
             engine = builder.build_cuda_engine(network)
@@ -132,6 +135,7 @@ def get_engine(onnx_file_path, engine_file_path=""):
     else:
         return build_engine()
 
+
 def main():
     """Create a TensorRT engine for ONNX-based YOLOv3-608 and run inference."""
 
@@ -145,42 +149,36 @@ def main():
     path = data['valid']  # path to test images
     names = load_classes(data['names'])  # class names
 
-    iouv = iouv = np.linspace(0.5, 0.95, 1, dtype=np.float64)  # iou vector for mAP@0.5:0.95
+    iouv = torch.linspace(0.5, 0.95, 1, dtype=torch.float32)  # iou vector for mAP@0.5:0.95
     niou = 1
 
-    conf_thres = 0.4
+    conf_thres = 0.001
     iou_thres = 0.6
 
-
     # Genearte custom dataloader
-    img_size = 384 # copy form pytorch src
+    img_size = 448  # copy form pytorch src
     batch_size = 16
     dataset = LoadImagesAndLabels(path, img_size, batch_size, rect=True)
     batch_size = min(batch_size, len(dataset))
 
     dataloader = data_loader(dataset, batch_size, img_size)
-
-
-    # # Two-dimensional tuple with the target network's (spatial) input resolution in HW ordered
-    # input_resolution_yolov3_HW = (416, 416)
-
-    # Output shapes expected by the post-processor
-    output_shapes = [(16, 126, 13, 13), (16, 126, 26, 26), (16, 126, 52, 52)]
+    output_shapes = [(16, 126, 14, 14), (16, 126, 28, 28), (16, 126, 56, 56)]
+    # output_shapes = [(16, 126, 12, 12), (16, 126, 24, 24), (16, 126, 48, 48)]
     # Do inference with TensorRT
     trt_outputs = []
     with get_engine(onnx_file_path, engine_file_path) as engine, engine.create_execution_context() as context:
         inputs, outputs, bindings, stream = common.allocate_buffers(engine)
         pbar = tqdm.tqdm(dataloader)
-        # s = ('%20s' + '%10s' * 6) % ('Class', 'Images', 'Targets', 'P', 'R', 'mAP@0.5', 'F1')
-        # p, r, f1, mp, mr, map, mf1, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
-        # pbar = tqdm.tqdm(dataloader, desc=s)
+        jdict, stats, ap, ap_class = [], [], [], []
+        p, r, f1, mp, mr, map, mf1, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
+        seen = 0
         for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
-            print('img shape:',imgs.shape)
+            print('img shape:', imgs.shape)
             imgs = imgs.astype(np.float32) / 255.0
             # print(imgs.dtype)
             nb, _, height, width = imgs.shape  # batch size, channels, height, width
             whwh = np.array([width, height, width, height])
-            print("batch:",batch_i)
+            print("batch:", batch_i)
 
             inputs[0].host = imgs
             # # Do layers before yolo
@@ -190,16 +188,94 @@ def main():
             trt_outputs = [np.ascontiguousarray(otpt[:, :, :int(imgs.shape[2]*(2**i)/32), :int(imgs.shape[3]*(2**i)/32)], dtype=np.float32) for i, otpt in enumerate(trt_outputs)]
             postprocessor_args = {"yolo_masks":   [(6, 7, 8), (3, 4, 5), (0, 1, 2)],                  # A list of 3 three-dimensional tuples for the YOLO masks
                                   "yolo_anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),  # A list of 9 two-dimensional tuples for the YOLO anchors
-                                                  (59, 119), (116, 90), (156, 198), (373, 326)],
+                                                   (59, 119), (116, 90), (156, 198), (373, 326)],
                                   # NOTE
                                   "num_classes": 37,
-                                  "stride":[32, 16, 8]}
+                                  "stride": [32, 16, 8]}
 
             postprocessor = PostprocessYOLO(**postprocessor_args)
-            output_list = postprocessor.process(trt_outputs, (shapes[0]))
+            output_list = postprocessor.process(trt_outputs)
             inf_out = torch.cat(output_list, 1)
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres)  # nms
 
+            # Statistics per image
+            for si, pred in enumerate(output):
+                # labels = targets[targets[:, 0] == si, 1:]
+                labels = torch.tensor(targets[targets[:, 0] == si, 1:], dtype=torch.float32)
+                nl = len(labels)
+                tcls = labels[:, 0].tolist() if nl else []  # target class
+                seen += 1
+
+                if pred is None:
+                    if nl:
+                        stats.append((torch.zeros(0, niou, dtype=torch.bool), torch.Tensor(), torch.Tensor(), tcls))
+                    continue
+
+                # Append to text file
+                # with open('test.txt', 'a') as file:
+                #    [file.write('%11.5g' * 7 % tuple(x) + '\n') for x in pred]
+
+                # Clip boxes to image bounds
+                utils.clip_coords(pred, (height, width))
+
+                # Assign all predictions as incorrect
+                correct = torch.zeros(pred.shape[0], niou, dtype=torch.bool, device='cpu')
+                if nl:
+                    detected = []  # target indices
+                    tcls_tensor = labels[:, 0]
+
+                    # target boxes
+                    tbox = utils.xywh2xyxy(labels[:, 1:5]) * whwh
+                    tbox = tbox.type(torch.float32)
+
+                    # Per target class
+                    for cls in torch.unique(tcls_tensor):
+                        ti = (cls == tcls_tensor).nonzero().view(-1)  # prediction indices
+                        pi = (cls == pred[:, 5]).nonzero().view(-1)  # target indices
+
+                        # Search for detections
+                        if pi.shape[0]:
+                            # Prediction to target ious
+                            ious, i = utils.box_iou(pred[pi, :4], tbox[ti]).max(1)  # best ious, indices
+                            # Append detections
+                            for j in (ious > iouv[0]).nonzero():
+                                d = ti[i[j]]  # detected target
+                                if d not in detected:
+                                    detected.append(d)
+                                    correct[pi[j]] = ious[j] > iouv  # iou_thres is 1xn
+                                    if len(detected) == nl:  # all targets already located in image
+                                        break
+
+                # Append statistics (correct, conf, pcls, tcls)
+                stats.append((correct.cpu(), pred[:, 4].cpu(), pred[:, 5].cpu(), tcls))
+
+            # Plot images
+            if batch_i < 1:
+                f = 'test_batch%g_gt.jpg' % batch_i  # filename
+                utils.plot_images(imgs, targets, paths=paths, names=names, fname=f)  # ground truth
+                f = 'test_batch%g_pred.jpg' % batch_i
+                utils.plot_images(imgs, utils.output_to_target(output, width, height), paths=paths, names=names, fname=f)  # predictions
+
+        # Compute statistics
+        stats = [np.concatenate(x, 0) for x in zip(*stats)]  # to numpy
+        if len(stats):
+            p, r, ap, f1, ap_class = utils.ap_per_class(*stats)
+            if niou > 1:
+                p, r, ap, f1 = p[:, 0], r[:, 0], ap.mean(1), ap[:, 0]  # [P, R, AP@0.5:0.95, AP@0.5]
+            mp, mr, map, mf1 = p.mean(), r.mean(), ap.mean(), f1.mean()
+            nt = np.bincount(stats[3].astype(np.int64), minlength=nc)  # number of targets per class
+        else:
+            nt = torch.zeros(1)
+
+        # Print results
+        pf = '%20s' + '%10.3g' * 6  # print format
+        print(pf % ('all', seen, nt.sum(), mp, mr, map, mf1))
+
+        # Return results
+        maps = np.zeros(nc) + map
+        for i, c in enumerate(ap_class):
+            maps[c] = ap[i]
+        return (mp, mr, map, mf1), maps
 
 
 if __name__ == '__main__':

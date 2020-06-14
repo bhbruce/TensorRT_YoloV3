@@ -56,15 +56,16 @@ import pycuda.driver as cuda
 import pycuda.autoinit
 from PIL import ImageDraw
 
-from data_processing import PreprocessYOLO, PostprocessYOLO, ALL_CATEGORIES
+from data_processing import  PostprocessYOLO
 
 import sys, os
 sys.path.insert(1, os.path.join(sys.path[0], ".."))
 import common
 
-from utils.utils import parse_data_cfg, load_classes
+from utils.utils import parse_data_cfg, load_classes, non_max_suppression
 from utils.data_loader import LoadImagesAndLabels, data_loader
 TRT_LOGGER = trt.Logger()
+import torch
 
 def draw_bboxes(image_raw, bboxes, confidences, categories, all_categories, bbox_color='blue'):
     """Draw the bounding boxes on the original input image and return it.
@@ -144,11 +145,15 @@ def main():
     path = data['valid']  # path to test images
     names = load_classes(data['names'])  # class names
     
-    iouv = iouv = np.linspace(0.5, 0.95, 1,dtype=np.float64)  # iou vector for mAP@0.5:0.95
+    iouv = iouv = np.linspace(0.5, 0.95, 1, dtype=np.float64)  # iou vector for mAP@0.5:0.95
     niou = 1
 
+    conf_thres = 0.001
+    iou_thres = 0.6
+
+
     # Genearte custom dataloader
-    img_size = 416 
+    img_size = 384 # copy form pytorch src 
     batch_size = 16
     dataset = LoadImagesAndLabels(path, img_size, batch_size, rect=True)
     batch_size = min(batch_size, len(dataset))
@@ -157,13 +162,7 @@ def main():
 
 
     # # Two-dimensional tuple with the target network's (spatial) input resolution in HW ordered
-    input_resolution_yolov3_HW = (416, 416)
-    # # Create a pre-processor object by specifying the required input resolution for YOLOv3
-    # preprocessor = PreprocessYOLO(input_resolution_yolov3_HW)
-    # # Load an image from the specified input path, and return it together with  a pre-processed version
-    # image_raw, image = preprocessor.process(input_image_path)
-    # # Store the shape of the original input image in WH format, we will need it for later
-    # shape_orig_WH = image_raw.size
+    # input_resolution_yolov3_HW = (416, 416)
 
     # Output shapes expected by the post-processor
     output_shapes = [(16, 159, 13, 13), (16, 159, 26, 26), (16, 159, 52, 52)]
@@ -176,58 +175,44 @@ def main():
         # p, r, f1, mp, mr, map, mf1, t0, t1 = 0., 0., 0., 0., 0., 0., 0., 0., 0.
         # pbar = tqdm.tqdm(dataloader, desc=s)
         for batch_i, (imgs, targets, paths, shapes) in enumerate(pbar):
-            # print(imgs.shape)
+            print('img shape:',imgs.shape)
+            imgs = imgs.astype(np.float32) / 255.0
+            # print(imgs.dtype)
+            nb, _, height, width = imgs.shape  # batch size, channels, height, width
+            whwh = np.array([width, height, width, height])
+            print("batch:",batch_i)
+            print(imgs.shape)
             # print(targets.shape)
             # print(len(paths),paths)
             # print(len(shapes),shapes)
-            # print(shapes[0])
+            # # print(shapes[0])
             # print('='*40)
+
+
             inputs[0].host = imgs
+            # # Do layers before yolo
             trt_outputs = common.do_inference_v2(context, bindings=bindings, inputs=inputs, outputs=outputs, stream=stream)
             
             trt_outputs = [output.reshape(shape) for output, shape in zip(trt_outputs, output_shapes)]
-
-            print(trt_outputs[0][0].shape)
-
-            # postprocessor_args = {"yolo_masks": [(6, 7, 8), (3, 4, 5), (0, 1, 2)],                  # A list of 3 three-dimensional tuples for the YOLO masks
-            #                     "yolo_anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),  # A list of 9 two-dimensional tuples for the YOLO anchors
-            #                                     (59, 119), (116, 90), (156, 198), (373, 326)],
-            #                     "obj_threshold": 0.6,                                               # Threshold for object coverage, float value between 0 and 1
-            #                     "nms_threshold": 0.5,                                               # Threshold for non-max suppression algorithm, float value between 0 and 1
-            #                     "yolo_input_resolution": input_resolution_yolov3_HW}
-
-            # postprocessor = PostprocessYOLO(**postprocessor_args)
-            # boxes, classes, scores = postprocessor.process(trt_outputs, (shapes))
+            # # Do layers before yolo
 
 
+            # # print(len(trt_outputs),trt_outputs[0].shape)
+
+            postprocessor_args = {"yolo_masks":   [(6, 7, 8), (3, 4, 5), (0, 1, 2)],                  # A list of 3 three-dimensional tuples for the YOLO masks
+                                  "yolo_anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),  # A list of 9 two-dimensional tuples for the YOLO anchors
+                                                  (59, 119), (116, 90), (156, 198), (373, 326)],
+                                  "num_classes": 48,                                              
+                                  "stride":[32, 16, 8]}                                               
+
+            postprocessor = PostprocessYOLO(**postprocessor_args)
+            output_list = postprocessor.process(trt_outputs, (shapes[0]))
+            # x = zip(*output_list)
+            inf_out = torch.cat(output_list, 1)
+            print('layer out shape:', inf_out.shape)
+            output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres)  # nms
 
 
-    #     # Do inference
-    #     print('Running inference on image {}...'.format(input_image_path))
-    #     # Set host input to the image. The common.do_inference function will copy the input to the GPU before executing.
-    #     inputs[0].host = image
-    #     trt_outputs = common.do_inference_v2(context, bindings=bindings, inputs=inputs, outputs=outputs, stream=stream)
-
-    # # Before doing post-processing, we need to reshape the outputs as the common.do_inference will give us flat arrays.
-    # # for output, shape in zip(trt_outputs, output_shapes):
-    # #     print(output.shape,shape)
-    # trt_outputs = [output.reshape(shape) for output, shape in zip(trt_outputs, output_shapes)]
-    # postprocessor_args = {"yolo_masks": [(6, 7, 8), (3, 4, 5), (0, 1, 2)],                    # A list of 3 three-dimensional tuples for the YOLO masks
-    #                       "yolo_anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),  # A list of 9 two-dimensional tuples for the YOLO anchors
-    #                                        (59, 119), (116, 90), (156, 198), (373, 326)],
-    #                       "obj_threshold": 0.1,#0.6,                                               # Threshold for object coverage, float value between 0 and 1
-    #                       "nms_threshold": 0.1,#0.5,                                               # Threshold for non-max suppression algorithm, float value between 0 and 1
-    #                       "yolo_input_resolution": input_resolution_yolov3_HW}
-
-    # postprocessor = PostprocessYOLO(**postprocessor_args)
-
-    # # Run the post-processing algorithms on the TensorRT outputs and get the bounding box details of detected objects
-    # boxes, classes, scores = postprocessor.process(trt_outputs, (shape_orig_WH))
-    # # Draw the bounding boxes onto the original input image and save it as a PNG file
-    # obj_detected_img = draw_bboxes(image_raw, boxes, scores, classes, ALL_CATEGORIES)
-    # output_image_path = 'dog_bboxes.png'
-    # obj_detected_img.save(output_image_path, 'PNG')
-    # print('Saved image with bounding boxes of detected objects to {}.'.format(output_image_path))
 
 if __name__ == '__main__':
     main()

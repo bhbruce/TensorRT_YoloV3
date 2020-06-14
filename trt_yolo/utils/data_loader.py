@@ -226,7 +226,7 @@ class LoadImagesAndLabels():  # for training/testing
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
-
+        
         return img, labels_out, self.img_files[index], shapes
 
 def data_loader(dataset, batch_size, img_size):
@@ -247,4 +247,4 @@ def data_loader(dataset, batch_size, img_size):
             b_file_name.append(file_name)
             b_shapes.append(shapes)
         
-        yield (np.stack(img_list,0), np.concatenate(label_list,0),file_name,shapes)
+        yield (np.stack(img_list,0), np.concatenate(label_list,0),b_file_name,b_shapes)

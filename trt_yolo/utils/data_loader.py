@@ -10,7 +10,7 @@ import numpy as np
 from PIL import Image, ExifTags
 from tqdm import tqdm
 from utils.utils import xyxy2xywh
-
+import torch
 img_formats = ['.bmp', '.jpg', '.jpeg', '.png', '.tif', '.dng']
 
 # Get orientation exif tag
@@ -94,7 +94,7 @@ class LoadImagesAndLabels():  # for training/testing
                               if os.path.splitext(x)[-1].lower() in img_formats]
 
         n = len(self.img_files)
-        assert n > 0, 'No images found in %s. See %s' % (path, help_url)
+        assert n > 0, 'No images found in %s.' % (path)
         bi = np.floor(np.arange(n) / batch_size).astype(np.int)  # batch index
         nb = bi[-1] + 1  # number of batches
 
@@ -120,10 +120,10 @@ class LoadImagesAndLabels():  # for training/testing
                 np.savetxt(sp, s, fmt='%g')  # overwrites existing (if any)
 
             # Sort by aspect ratio
-            s = np.array(s, dtype=np.float64)# size pair(W,H)
+            s = np.array(s, dtype=np.float64)# size pair(W,H) 
             ar = s[:, 1] / s[:, 0]  # aspect ratio
-
-            # sort img and label with sort index i
+            
+            # sort img and label with sort index i 
             i = ar.argsort()
             self.img_files = [self.img_files[i] for i in i]
             self.label_files = [self.label_files[i] for i in i]
@@ -145,8 +145,8 @@ class LoadImagesAndLabels():  # for training/testing
         # Cache labels
         self.imgs = [None] * n
         self.labels = [np.zeros((0, 5), dtype=np.float32)] * n
-
-
+        
+        
         pbar = tqdm(self.label_files, desc='Caching labels')
         nm, nf, ne, ns, nd = 0, 0, 0, 0, 0  # number missing, found, empty, datasubset, duplicate
         for i, file in enumerate(pbar):
@@ -172,7 +172,7 @@ class LoadImagesAndLabels():  # for training/testing
 
             pbar.desc = 'Caching labels (%g found, %g missing, %g empty, %g duplicate, for %g images)' % (
                 nf, nm, ne, nd, n)
-        assert nf > 0, 'No labels found in %s. See %s' % (os.path.dirname(file) + os.sep, help_url)
+        assert nf > 0, 'No labels found in %s.' % (os.path.dirname(file) + os.sep)
 
 
 
@@ -193,9 +193,10 @@ class LoadImagesAndLabels():  # for training/testing
 
         # Load image
         img, (h0, w0), (h, w) = load_image(self, index)
-
+        
         # Letterbox
         shape = self.batch_shapes[self.batch[index]] if self.rect else self.img_size  # final letterboxed shape
+
         img, ratio, pad = letterbox(img, shape, auto=False, scaleup=False)#scaleup=self.augment)
         shapes = (h0, w0), ((h / h0, w / w0), pad)  # for COCO mAP rescaling
 
@@ -214,36 +215,39 @@ class LoadImagesAndLabels():  # for training/testing
         if nL:
             # convert xyxy to xywh
             labels[:, 1:5] = xyxy2xywh(labels[:, 1:5])
-
             # Normalize coordinates 0 - 1
             labels[:, [2, 4]] /= img.shape[0]  # height
             labels[:, [1, 3]] /= img.shape[1]  # width
 
-        labels_out = np.zeros((nL, 6))
+        labels_out = torch.zeros((nL, 6),dtype= torch.float32)
         if nL:
-            labels_out[:, 1:] = labels
+            labels_out[:, 1:] = torch.from_numpy(labels)#labels
 
         # Convert
         img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
         img = np.ascontiguousarray(img)
-
+        
         return img, labels_out, self.img_files[index], shapes
 
 def data_loader(dataset, batch_size, img_size):
+
     for batch in range(0, dataset.__len__(), batch_size):
+
         end = min(batch+batch_size,dataset.__len__())
         img_list = list()
         label_list = list()
         b_file_name = list()
         b_shapes = list()
-        print('length of batch : ', end-batch)
-        for idx, i in enumerate(range(batch, end)):
+        # print('length of batch : ', end-batch)
+        for idx,i in enumerate(range(batch,end)):
             img , label, file_name, shapes= dataset.__getitem__(i)
+            
             img_list.append(img)
             for l in label:
-                l[0] = idx
+                l[0] = idx  # add target image index for build_targets()
             label_list.append(label)
+            
             b_file_name.append(file_name)
             b_shapes.append(shapes)
 
-        yield (np.stack(img_list,0), np.concatenate(label_list,0),b_file_name,b_shapes)
+        yield (np.stack(img_list,0), torch.cat(label_list,0),b_file_name,b_shapes)

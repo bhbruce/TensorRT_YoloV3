@@ -16,6 +16,7 @@ import torch.nn as nn
 import torchvision
 from tqdm import tqdm
 
+# from . import torch_utils  # , google_utils
 
 # Set printoptions
 torch.set_printoptions(linewidth=320, precision=5, profile='long')
@@ -25,6 +26,11 @@ matplotlib.rc('font', **{'size': 11})
 # Prevent OpenCV from multithreading (to use PyTorch DataLoader)
 cv2.setNumThreads(0)
 
+
+# def init_seeds(seed=0):
+#     random.seed(seed)
+#     np.random.seed(seed)
+#     torch_utils.init_seeds(seed=seed)
 
 def parse_data_cfg(path):
     # Parses the data configuration file
@@ -44,13 +50,12 @@ def parse_data_cfg(path):
 
     return options
 
-
-def check_git_status():
-    if platform in ['linux', 'darwin']:
-        # Suggest 'git pull' if repo is out of date
-        s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
-        if 'Your branch is behind' in s:
-            print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
+# def check_git_status():
+#     if platform in ['linux', 'darwin']:
+#         # Suggest 'git pull' if repo is out of date
+#         s = subprocess.check_output('if [ -d .git ]; then git fetch && git status -uno; fi', shell=True).decode('utf-8')
+#         if 'Your branch is behind' in s:
+#             print(s[s.find('Your branch is behind'):s.find('\n\n')] + '\n')
 
 
 def load_classes(path):
@@ -60,58 +65,58 @@ def load_classes(path):
     return list(filter(None, names))  # filter removes empty strings (such as last line)
 
 
-def labels_to_class_weights(labels, nc=80):
-    # Get class weights (inverse frequency) from training labels
-    if labels[0] is None:  # no labels loaded
-        return torch.Tensor()
+# def labels_to_class_weights(labels, nc=80):
+#     # Get class weights (inverse frequency) from training labels
+#     if labels[0] is None:  # no labels loaded
+#         return torch.Tensor()
 
-    labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
-    classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
-    weights = np.bincount(classes, minlength=nc)  # occurences per class
+#     labels = np.concatenate(labels, 0)  # labels.shape = (866643, 5) for COCO
+#     classes = labels[:, 0].astype(np.int)  # labels = [class xywh]
+#     weights = np.bincount(classes, minlength=nc)  # occurences per class
 
-    # Prepend gridpoint count (for uCE trianing)
-    # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
-    # weights = np.hstack([gpi * len(labels)  - weights.sum() * 9, weights * 9]) ** 0.5  # prepend gridpoints to start
+#     # Prepend gridpoint count (for uCE trianing)
+#     # gpi = ((320 / 32 * np.array([1, 2, 4])) ** 2 * 3).sum()  # gridpoints per image
+#     # weights = np.hstack([gpi * len(labels)  - weights.sum() * 9, weights * 9]) ** 0.5  # prepend gridpoints to start
 
-    weights[weights == 0] = 1  # replace empty bins with 1
-    weights = 1 / weights  # number of targets per class
-    weights /= weights.sum()  # normalize
-    return torch.from_numpy(weights)
-
-
-def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
-    # Produces image weights based on class mAPs
-    n = len(labels)
-    class_counts = np.array([np.bincount(labels[i][:, 0].astype(np.int), minlength=nc) for i in range(n)])
-    image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
-    # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
-    return image_weights
+#     weights[weights == 0] = 1  # replace empty bins with 1
+#     weights = 1 / weights  # number of targets per class
+#     weights /= weights.sum()  # normalize
+#     return torch.from_numpy(weights)
 
 
-def coco_class_weights():  # frequency of each class in coco train2014
-    n = [187437, 4955, 30920, 6033, 3838, 4332, 3160, 7051, 7677, 9167, 1316, 1372, 833, 6757, 7355, 3302, 3776, 4671,
-         6769, 5706, 3908, 903, 3686, 3596, 6200, 7920, 8779, 4505, 4272, 1862, 4698, 1962, 4403, 6659, 2402, 2689,
-         4012, 4175, 3411, 17048, 5637, 14553, 3923, 5539, 4289, 10084, 7018, 4314, 3099, 4638, 4939, 5543, 2038, 4004,
-         5053, 4578, 27292, 4113, 5931, 2905, 11174, 2873, 4036, 3415, 1517, 4122, 1980, 4464, 1190, 2302, 156, 3933,
-         1877, 17630, 4337, 4624, 1075, 3468, 135, 1380]
-    weights = 1 / torch.Tensor(n)
-    weights /= weights.sum()
-    # with open('data/coco.names', 'r') as f:
-    #     for k, v in zip(f.read().splitlines(), n):
-    #         print('%20s: %g' % (k, v))
-    return weights
+# def labels_to_image_weights(labels, nc=80, class_weights=np.ones(80)):
+#     # Produces image weights based on class mAPs
+#     n = len(labels)
+#     class_counts = np.array([np.bincount(labels[i][:, 0].astype(np.int), minlength=nc) for i in range(n)])
+#     image_weights = (class_weights.reshape(1, nc) * class_counts).sum(1)
+#     # index = random.choices(range(n), weights=image_weights, k=1)  # weight image sample
+#     return image_weights
 
 
-def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
-    # https://tech.amikelive.com/node-718/what-object-categories-labels-are-in-coco-dataset/
-    # a = np.loadtxt('data/coco.names', dtype='str', delimiter='\n')
-    # b = np.loadtxt('data/coco_paper.names', dtype='str', delimiter='\n')
-    # x1 = [list(a[i] == b).index(True) + 1 for i in range(80)]  # darknet to coco
-    # x2 = [list(b[i] == a).index(True) if any(b[i] == a) else None for i in range(91)]  # coco to darknet
-    x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
-         35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
-         64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
-    return x
+# def coco_class_weights():  # frequency of each class in coco train2014
+#     n = [187437, 4955, 30920, 6033, 3838, 4332, 3160, 7051, 7677, 9167, 1316, 1372, 833, 6757, 7355, 3302, 3776, 4671,
+#          6769, 5706, 3908, 903, 3686, 3596, 6200, 7920, 8779, 4505, 4272, 1862, 4698, 1962, 4403, 6659, 2402, 2689,
+#          4012, 4175, 3411, 17048, 5637, 14553, 3923, 5539, 4289, 10084, 7018, 4314, 3099, 4638, 4939, 5543, 2038, 4004,
+#          5053, 4578, 27292, 4113, 5931, 2905, 11174, 2873, 4036, 3415, 1517, 4122, 1980, 4464, 1190, 2302, 156, 3933,
+#          1877, 17630, 4337, 4624, 1075, 3468, 135, 1380]
+#     weights = 1 / torch.Tensor(n)
+#     weights /= weights.sum()
+#     # with open('data/coco.names', 'r') as f:
+#     #     for k, v in zip(f.read().splitlines(), n):
+#     #         print('%20s: %g' % (k, v))
+#     return weights
+
+
+# def coco80_to_coco91_class():  # converts 80-index (val2014) to 91-index (paper)
+#     # https://tech.amikelive.com/node-718/what-object-categories-labels-are-in-coco-dataset/
+#     # a = np.loadtxt('data/coco.names', dtype='str', delimiter='\n')
+#     # b = np.loadtxt('data/coco_paper.names', dtype='str', delimiter='\n')
+#     # x1 = [list(a[i] == b).index(True) + 1 for i in range(80)]  # darknet to coco
+#     # x2 = [list(b[i] == a).index(True) if any(b[i] == a) else None for i in range(91)]  # coco to darknet
+#     x = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34,
+#          35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63,
+#          64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84, 85, 86, 87, 88, 89, 90]
+#     return x
 
 
 def xyxy2xywh(x):
@@ -133,25 +138,6 @@ def xywh2xyxy(x):
     y[:, 3] = x[:, 1] + x[:, 3] / 2  # bottom right y
     return y
 
-
-# def xywh2xyxy(box):
-#     # Convert nx4 boxes from [x, y, w, h] to [x1, y1, x2, y2]
-#     if isinstance(box, torch.Tensor):
-#         x, y, w, h = box.t()
-#         return torch.stack((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).t()
-#     else:  # numpy
-#         x, y, w, h = box.T
-#         return np.stack((x - w / 2, y - h / 2, x + w / 2, y + h / 2)).T
-#
-#
-# def xyxy2xywh(box):
-#     # Convert nx4 boxes from [x1, y1, x2, y2] to [x, y, w, h]
-#     if isinstance(box, torch.Tensor):
-#         x1, y1, x2, y2 = box.t()
-#         return torch.stack(((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1)).t()
-#     else:  # numpy
-#         x1, y1, x2, y2 = box.T
-#         return np.stack(((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1)).T
 
 
 def scale_coords(img1_shape, coords, img0_shape, ratio_pad=None):
@@ -332,7 +318,8 @@ def box_iou(box1, box2):
     def box_area(box):
         # box = 4xn
         return (box[2] - box[0]) * (box[3] - box[1])
-
+    # print(type(box1))
+    # print(type(box2))
     area1 = box_area(box1.t())
     area2 = box_area(box2.t())
 

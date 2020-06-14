@@ -136,28 +136,28 @@ def main():
     """Create a TensorRT engine for ONNX-based YOLOv3-608 and run inference."""
 
     # Try to load a previously generated YOLOv3-608 network graph in ONNX format:
-    onnx_file_path = 'yolov3.onnx'
+    onnx_file_path = './yolov3_unrel.onnx'
     engine_file_path = "yolov3.trt"
-    data_path = "data/unrel.data"
+    data_path = "/home/train/data/unrel.data"
 
     data = parse_data_cfg(data_path)
     nc = int(data['classes'])  # number of classes
     path = data['valid']  # path to test images
     names = load_classes(data['names'])  # class names
-    
+
     iouv = iouv = np.linspace(0.5, 0.95, 1, dtype=np.float64)  # iou vector for mAP@0.5:0.95
     niou = 1
 
-    conf_thres = 0.001
+    conf_thres = 0.4
     iou_thres = 0.6
 
 
     # Genearte custom dataloader
-    img_size = 384 # copy form pytorch src 
+    img_size = 384 # copy form pytorch src
     batch_size = 16
     dataset = LoadImagesAndLabels(path, img_size, batch_size, rect=True)
     batch_size = min(batch_size, len(dataset))
- 
+
     dataloader = data_loader(dataset, batch_size, img_size)
 
 
@@ -165,7 +165,7 @@ def main():
     # input_resolution_yolov3_HW = (416, 416)
 
     # Output shapes expected by the post-processor
-    output_shapes = [(16, 159, 13, 13), (16, 159, 26, 26), (16, 159, 52, 52)]
+    output_shapes = [(16, 126, 13, 13), (16, 126, 26, 26), (16, 126, 52, 52)]
     # Do inference with TensorRT
     trt_outputs = []
     with get_engine(onnx_file_path, engine_file_path) as engine, engine.create_execution_context() as context:
@@ -181,35 +181,23 @@ def main():
             nb, _, height, width = imgs.shape  # batch size, channels, height, width
             whwh = np.array([width, height, width, height])
             print("batch:",batch_i)
-            print(imgs.shape)
-            # print(targets.shape)
-            # print(len(paths),paths)
-            # print(len(shapes),shapes)
-            # # print(shapes[0])
-            # print('='*40)
-
 
             inputs[0].host = imgs
             # # Do layers before yolo
             trt_outputs = common.do_inference_v2(context, bindings=bindings, inputs=inputs, outputs=outputs, stream=stream)
-            
+
             trt_outputs = [output.reshape(shape) for output, shape in zip(trt_outputs, output_shapes)]
-            # # Do layers before yolo
-
-
-            # # print(len(trt_outputs),trt_outputs[0].shape)
-
+            trt_outputs = [np.ascontiguousarray(otpt[:, :, :int(imgs.shape[2]*(2**i)/32), :int(imgs.shape[3]*(2**i)/32)], dtype=np.float32) for i, otpt in enumerate(trt_outputs)]
             postprocessor_args = {"yolo_masks":   [(6, 7, 8), (3, 4, 5), (0, 1, 2)],                  # A list of 3 three-dimensional tuples for the YOLO masks
                                   "yolo_anchors": [(10, 13), (16, 30), (33, 23), (30, 61), (62, 45),  # A list of 9 two-dimensional tuples for the YOLO anchors
                                                   (59, 119), (116, 90), (156, 198), (373, 326)],
-                                  "num_classes": 48,                                              
-                                  "stride":[32, 16, 8]}                                               
+                                  # NOTE
+                                  "num_classes": 37,
+                                  "stride":[32, 16, 8]}
 
             postprocessor = PostprocessYOLO(**postprocessor_args)
             output_list = postprocessor.process(trt_outputs, (shapes[0]))
-            # x = zip(*output_list)
             inf_out = torch.cat(output_list, 1)
-            print('layer out shape:', inf_out.shape)
             output = non_max_suppression(inf_out, conf_thres=conf_thres, iou_thres=iou_thres)  # nms
 
 

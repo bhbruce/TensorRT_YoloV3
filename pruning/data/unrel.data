@@ -1,0 +1,4 @@
+classes=48
+train=/home/sk/yolov3-channel-and-layer-pruning/data/unrel_train.txt
+valid=/home/sk/yolov3-channel-and-layer-pruning/data/unrel_val.txt
+names=/home/sk/yolov3-channel-and-layer-pruning/data/unrel.names
